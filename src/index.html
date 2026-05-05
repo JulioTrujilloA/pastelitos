@@ -128,9 +128,60 @@ select.inp { cursor: pointer; }
   .form-group.flex-1 { width: 100%; }
   .stat-row { gap: 6px; }
 }
+
+/* AUTH */
+#auth-screen {
+  display: none; position: fixed; inset: 0; background: var(--chocolate);
+  z-index: 9000; align-items: center; justify-content: center; padding: 20px;
+}
+#auth-screen.visible { display: flex; }
+.auth-card {
+  background: #fffdf9; border-radius: 20px; padding: 36px 32px; width: 100%; max-width: 380px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.auth-logo { text-align: center; margin-bottom: 28px; }
+.auth-logo h1 { font-family: 'Playfair Display', serif; font-size: 1.8rem; color: var(--chocolate); }
+.auth-logo p { font-size: 0.78rem; color: var(--caramel); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
+.auth-tabs { display: flex; background: var(--warm); border-radius: 10px; padding: 4px; margin-bottom: 22px; gap: 4px; }
+.auth-tab { flex: 1; border: none; background: none; border-radius: 8px; padding: 8px; font-family: 'DM Sans', sans-serif; font-size: 0.84rem; font-weight: 600; cursor: pointer; color: var(--caramel); transition: all 0.2s; }
+.auth-tab.active { background: #fff; color: var(--chocolate); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+.auth-error { background: var(--red-light); color: var(--red); border-radius: 8px; padding: 10px 12px; font-size: 0.82rem; margin-bottom: 14px; display: none; }
+.auth-error.visible { display: block; }
+.logout-btn { background: none; border: none; color: rgba(255,255,255,0.5); font-size: 0.78rem; cursor: pointer; padding: 4px 8px; border-radius: 6px; font-family: 'DM Sans', sans-serif; }
+.logout-btn:hover { color: var(--blush); background: rgba(255,255,255,0.08); }
 </style>
 </head>
 <body>
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div style="font-size:2.5rem;margin-bottom:8px">🧁</div>
+      <h1>Pastelitos</h1>
+      <p>Control de Negocio</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login')">Iniciar sesión</button>
+      <button class="auth-tab" onclick="switchAuthTab('register')">Registrarse</button>
+    </div>
+    <div class="auth-error" id="auth-error"></div>
+    <div class="form-group" style="margin-bottom:12px;">
+      <label>Correo electrónico</label>
+      <input class="inp" id="auth-email" type="email" placeholder="correo@ejemplo.com" autocomplete="email">
+    </div>
+    <div class="form-group" style="margin-bottom:20px;">
+      <label>Contraseña</label>
+      <input class="inp" id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" id="auth-submit-btn" onclick="handleAuth()" style="width:100%;justify-content:center;display:flex;">
+      Iniciar sesión
+    </button>
+    <p id="auth-mode-hint" style="text-align:center;font-size:0.75rem;color:#aaa;margin-top:14px;">
+      ¿No tienes cuenta? Cambia a <strong>Registrarse</strong> arriba.
+    </p>
+  </div>
+</div>
 
 <div id="loading-overlay">
   <div class="spinner"></div>
@@ -139,7 +190,7 @@ select.inp { cursor: pointer; }
 <div id="toast"></div>
 
 <div class="top-bar">
-  <h1>🧁 Control de Pastelitos</h1>
+  <h1>🧁 Control de Pastelitos <button class="logout-btn" onclick="logout()" title="Cerrar sesión">↩ Salir</button></h1>
   <div class="tabs">
     <button class="tab-btn active" onclick="showTab('compras',this)">📦 Compras</button>
     <button class="tab-btn" onclick="showTab('ventas',this)">💰 Ventas</button>
@@ -862,8 +913,57 @@ function renderResumen(){
   }
 }
 
+// ─── AUTH ─────────────────────────────────────────────────────
+let authMode = 'login';
+
+function switchAuthTab(mode){
+  authMode = mode;
+  document.querySelectorAll('.auth-tab').forEach((t,i)=>{
+    t.classList.toggle('active', (i===0&&mode==='login')||(i===1&&mode==='register'));
+  });
+  document.getElementById('auth-submit-btn').textContent = mode==='login' ? 'Iniciar sesión' : 'Crear cuenta';
+  document.getElementById('auth-mode-hint').style.display = mode==='login' ? '' : 'none';
+  document.getElementById('auth-error').classList.remove('visible');
+}
+
+function showAuthError(msg){
+  const el=document.getElementById('auth-error');
+  el.textContent=msg; el.classList.add('visible');
+}
+
+async function handleAuth(){
+  const email=document.getElementById('auth-email').value.trim();
+  const password=document.getElementById('auth-password').value;
+  if(!email||!password){ showAuthError('Ingresa tu correo y contraseña'); return; }
+  const btn=document.getElementById('auth-submit-btn');
+  btn.disabled=true; btn.textContent='Cargando...';
+  let result;
+  if(authMode==='login'){
+    result=await db.auth.signInWithPassword({email,password});
+  } else {
+    result=await db.auth.signUp({email,password});
+  }
+  btn.disabled=false;
+  btn.textContent=authMode==='login'?'Iniciar sesión':'Crear cuenta';
+  if(result.error){ showAuthError(result.error.message); return; }
+  if(authMode==='register' && !result.data?.session){
+    showAuthError('✅ Cuenta creada. Revisa tu correo para confirmar (o inicia sesión directo si el correo no llega).');
+    return;
+  }
+  document.getElementById('auth-screen').classList.remove('visible');
+  await initApp();
+}
+
+async function logout(){
+  await db.auth.signOut();
+  products=[]; purchases=[]; sales=[]; expenses=[];
+  document.getElementById('auth-screen').classList.add('visible');
+  document.getElementById('auth-email').value='';
+  document.getElementById('auth-password').value='';
+}
+
 // ─── INIT ─────────────────────────────────────────────────────
-(async ()=>{
+async function initApp(){
   await fetchAll();
   renderProducts();
   renderBuyForm();
@@ -871,6 +971,23 @@ function renderResumen(){
   renderSaleHistory();
   renderExpenseHistory();
   document.getElementById('exp_date').value=today();
+}
+
+(async ()=>{
+  showLoading('Verificando sesión...');
+  const { data:{ session } } = await db.auth.getSession();
+  hideLoading();
+  if(session){
+    await initApp();
+  } else {
+    document.getElementById('auth-screen').classList.add('visible');
+  }
+  // Escuchar cambios de sesión
+  db.auth.onAuthStateChange((event, session)=>{
+    if(event==='SIGNED_OUT'){
+      document.getElementById('auth-screen').classList.add('visible');
+    }
+  });
 })();
 </script>
 </body>
