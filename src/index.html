@@ -195,6 +195,7 @@ select.inp { cursor: pointer; }
     <button class="tab-btn active" onclick="showTab('compras',this)">📦 Compras</button>
     <button class="tab-btn" onclick="showTab('ventas',this)">💰 Ventas</button>
     <button class="tab-btn" onclick="showTab('gastos',this)">💸 Gastos</button>
+    <button class="tab-btn" onclick="showTab('caja',this)">🏧 Corte</button>
     <button class="tab-btn" onclick="showTab('resumen',this)">📊 Resumen</button>
     <button class="tab-btn" onclick="showTab('productos',this)">🎂 Productos</button>
   </div>
@@ -206,7 +207,8 @@ select.inp { cursor: pointer; }
     <div class="card-head"><div><span class="icon">📦</span>Registrar Compra</div></div>
     <div class="card-body">
       <div class="form-row" style="margin-bottom:14px;">
-        <div class="form-group flex-1"><label>Fecha de compra</label><input class="inp" id="buy_date" type="date"></div>
+        <div class="form-group flex-1"><label>Fecha de compra (pedido)</label><input class="inp" id="buy_date" type="date"></div>
+        <div class="form-group flex-1"><label>Fecha de entrega</label><input class="inp" id="buy_delivery_date" type="date"></div>
       </div>
       <p class="section-label">Cantidad por producto</p>
       <div id="buy_qty_list"></div>
@@ -234,21 +236,14 @@ select.inp { cursor: pointer; }
       <div class="form-row" style="margin-bottom:14px;">
         <div class="form-group flex-1"><label>Fecha de venta</label><input class="inp" id="sale_date" type="date"></div>
         <div class="form-group flex-1">
-          <label>Compra de origen (FIFO)</label>
+          <label>Entrega de origen (FIFO)</label>
           <select class="inp" id="sale_purchase_ref" onchange="renderSaleFormQty()">
             <option value="">— Todas las existencias —</option>
           </select>
         </div>
       </div>
-      <p class="section-label">Piezas vendidas por producto</p>
+      <p class="section-label">Piezas vendidas — <span style="color:var(--chocolate)">Normal</span> / <span style="color:var(--blue)">Al costo</span></p>
       <div id="sale_qty_list"></div>
-      <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:10px 12px;background:var(--warm);border-radius:10px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
-          <input type="checkbox" id="sale_owner" style="width:16px;height:16px;accent-color:var(--caramel);">
-          <span style="font-weight:600;color:var(--chocolate)">Compró el dueño</span>
-          <span style="font-size:0.75rem;color:#aaa">(al costo)</span>
-        </label>
-      </div>
       <div class="form-row" style="margin-top:10px;">
         <div class="form-group flex-1"><label>Propina $</label><input class="inp" id="sale_tip" type="number" min="0" value="0"></div>
         <div class="form-group flex-1"><label>Saldo / Cambio del día $</label><input class="inp" id="sale_change" type="number" min="0" value="0"></div>
@@ -281,6 +276,33 @@ select.inp { cursor: pointer; }
   <div class="card">
     <div class="card-head"><div><span class="icon">📋</span>Historial de Gastos</div></div>
     <div class="card-body" id="expenseHistory"></div>
+  </div>
+</div>
+
+<!-- CORTE DE CAJA -->
+<div class="section" id="tab-caja">
+  <div class="card">
+    <div class="card-head"><div><span class="icon">🏧</span>Corte de Caja</div></div>
+    <div class="card-body">
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group flex-1"><label>Fecha del corte</label><input class="inp" id="caja_date" type="date" onchange="renderCajaPreview()"></div>
+        <div class="form-group flex-1"><label>Saldo inicial (efectivo en caja) $</label><input class="inp" id="caja_opening" type="number" min="0" value="0" oninput="renderCajaPreview()"></div>
+      </div>
+      <div id="caja_preview"></div>
+      <div class="form-row" style="margin-top:12px;">
+        <div class="form-group flex-1"><label>Saldo final real (contado) $</label><input class="inp" id="caja_closing" type="number" min="0" value="0" oninput="renderCajaDiff()"></div>
+        <div class="form-group flex-1"><label>Notas</label><input class="inp" id="caja_notes" placeholder="Observaciones..."></div>
+      </div>
+      <div id="caja_diff"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;">
+        <button class="btn btn-primary" onclick="saveCashCut()">💾 Guardar Corte</button>
+        <button class="btn btn-ghost btn-sm" onclick="renderCajaPreview()">↺ Recalcular</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div><span class="icon">📋</span>Historial de Cortes</div></div>
+    <div class="card-body" id="cajaCuts"></div>
   </div>
 </div>
 
@@ -324,7 +346,7 @@ const { createClient } = supabase;
 const db = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── STATE ────────────────────────────────────────────────────
-let products = [], purchases = [], sales = [], expenses = [];
+let products = [], purchases = [], sales = [], expenses = [], cashCuts = [];
 let editingSaleId = null;
 
 // ─── HELPERS ─────────────────────────────────────────────────
@@ -358,28 +380,42 @@ function toast(msg, isError=false){
 const mapSale = r => ({
   id: r.id, date: r.date,
   purchaseRef: r.purchase_ref,
-  isOwner: r.is_owner,
-  tip: r.tip||0,
-  change: r.change||0,
-  items: r.items||{}
+  tip: r.tip||0, change: r.change||0,
+  items: r.items||{},
+  costItems: r.cost_items||{}
 });
 const mapExpense = r => ({ id: r.id, date: r.date, desc: r.description, amount: r.amount });
+const mapCut = r => ({ id: r.id, date: r.date, opening: r.opening_balance, closing: r.closing_balance, notes: r.notes||'' });
 
+const DEFAULT_PRODUCTS = [
+  { name:'Pastel de Chocolate',  cost:45, price:65 },
+  { name:'Tres Leches Mini',     cost:30, price:50 },
+  { name:'Tres Leches Normal',   cost:60, price:80 },
+  { name:'Pastel de Zanahoria',  cost:45, price:65 },
+  { name:'Pay de Queso',         cost:33, price:40 },
+];
 async function fetchAll(){
   showLoading('Cargando datos...');
-  const [p,pu,s,e] = await Promise.all([
+  const [p,pu,s,e,c] = await Promise.all([
     db.from('products').select('*').order('id'),
     db.from('purchases').select('*').order('date',{ascending:false}),
     db.from('sales').select('*').order('date',{ascending:false}),
     db.from('expenses').select('*').order('date',{ascending:false}),
+    db.from('cash_cuts').select('*').order('date',{ascending:false}),
   ]);
   if(p.error||pu.error||s.error||e.error){
-    hideLoading(); toast('Error al cargar datos. Verifica tu conexión.',true); return;
+    hideLoading(); toast('Error al cargar datos',true); return;
   }
-  products  = p.data||[];
+  if(!p.data||p.data.length===0){
+    showLoading('Configurando productos...');
+    const {data:seeded,error:se}=await db.from('products').insert(DEFAULT_PRODUCTS).select();
+    if(se){ hideLoading(); toast('Error al inicializar productos',true); return; }
+    products=seeded||[];
+  } else { products=p.data; }
   purchases = pu.data||[];
   sales     = (s.data||[]).map(mapSale);
   expenses  = (e.data||[]).map(mapExpense);
+  cashCuts  = (c.data||[]).map(mapCut);
   hideLoading();
 }
 
@@ -392,6 +428,7 @@ function showTab(id, btn){
   if(id==='compras'){ renderBuyForm(); renderPurchaseHistory(); }
   if(id==='ventas'){ renderSaleForm(); renderSaleHistory(); }
   if(id==='gastos'){ document.getElementById('exp_date').value=today(); renderExpenseHistory(); }
+  if(id==='caja'){ document.getElementById('caja_date').value=today(); renderCajaPreview(); renderCutHistory(); }
   if(id==='resumen'){ populateResumenFilter(); renderResumen(); }
 }
 
@@ -401,10 +438,10 @@ function getStock(productId, purchaseId=null){
   if(purchaseId){
     const pur=purchases.find(p=>p.id==purchaseId);
     if(pur) bought=pur.items[productId]||0;
-    sales.forEach(s=>{ if(s.purchaseRef==purchaseId) sold+=s.items[productId]||0; });
+    sales.forEach(s=>{ if(s.purchaseRef==purchaseId){ sold+=(s.items[productId]||0)+(s.costItems[productId]||0); } });
   } else {
     purchases.forEach(p=>{ bought+=p.items[productId]||0; });
-    sales.forEach(s=>{ sold+=s.items[productId]||0; });
+    sales.forEach(s=>{ sold+=(s.items[productId]||0)+(s.costItems[productId]||0); });
   }
   return bought-sold;
 }
@@ -477,6 +514,7 @@ function calcBuyTotal(){
 }
 function renderBuyForm(){
   document.getElementById('buy_date').value=today();
+  document.getElementById('buy_delivery_date').value=today();
   const el=document.getElementById('buy_qty_list');
   el.innerHTML='';
   products.forEach(p=>{
@@ -494,13 +532,14 @@ function clearBuyForm(){ products.forEach(p=>{ const e=document.getElementById('
 
 async function savePurchase(){
   const date=document.getElementById('buy_date').value;
-  if(!date){ alert('Selecciona una fecha'); return; }
+  const delivery_date=document.getElementById('buy_delivery_date').value||date;
+  if(!date){ alert('Selecciona la fecha de compra'); return; }
   const items={};
   let total=0;
   products.forEach(p=>{ const q=parseInt(document.getElementById('bq_'+p.id)?.value)||0; if(q>0){items[p.id]=q;total+=q;} });
   if(total===0){ alert('Agrega al menos una pieza'); return; }
   showLoading();
-  const {data,error}=await db.from('purchases').insert({date,items}).select().single();
+  const {data,error}=await db.from('purchases').insert({date,delivery_date,items}).select().single();
   hideLoading();
   if(error){ toast('Error al guardar compra',true); return; }
   purchases.unshift(data);
@@ -564,7 +603,10 @@ function renderPurchaseHistory(){
     div.className='hist-entry';
     div.innerHTML=`
       <div class="hist-head">
-        <span>📅 ${fmtDate(pur.date)}</span>
+        <div>
+          <span>🛒 Pedido: ${fmtDate(pur.date)}</span>
+          <span style="margin-left:8px;font-size:0.8rem;color:var(--green)">📦 Entrega: ${fmtDate(pur.delivery_date||pur.date)}</span>
+        </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="badge badge-warn">${totalPzs} pzas</span>
           ${!hasSales
@@ -589,11 +631,12 @@ function populateSaleRef(){
   const sel=document.getElementById('sale_purchase_ref');
   const prev=sel.value;
   sel.innerHTML='<option value="">— Todas las existencias —</option>';
-  [...purchases].sort((a,b)=>a.date.localeCompare(b.date)).forEach(pur=>{
+  [...purchases].sort((a,b)=>(a.delivery_date||a.date).localeCompare(b.delivery_date||b.date)).forEach(pur=>{
     const totalStock=products.reduce((s,p)=>s+getStock(p.id,pur.id),0);
     const opt=document.createElement('option');
     opt.value=pur.id;
-    opt.textContent=`${fmtDate(pur.date)} — ${totalStock} pzas restantes`;
+    const delivLabel=fmtDate(pur.delivery_date||pur.date);
+    opt.textContent=`Entrega ${delivLabel} — ${totalStock} pzas`;
     if(totalStock===0) opt.style.color='#aaa';
     sel.appendChild(opt);
   });
@@ -611,31 +654,40 @@ function renderSaleFormQty(excludeSaleId=null){
   const excSale=excludeSaleId?sales.find(s=>s.id==excludeSaleId):null;
   products.forEach(p=>{
     let stock=purRef?getStock(p.id,purRef):getStock(p.id);
-    if(excSale) stock+=excSale.items[p.id]||0;
-    const initVal=excSale?(excSale.items[p.id]||0):0;
+    if(excSale) stock+=(excSale.items[p.id]||0)+(excSale.costItems[p.id]||0);
+    const initNormal=excSale?(excSale.items[p.id]||0):0;
+    const initCost=excSale?(excSale.costItems[p.id]||0):0;
     const row=document.createElement('div');
-    row.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:7px;';
+    row.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:7px;';
     row.innerHTML=`
-      <span style="flex:1;font-size:0.87rem">${p.name}</span>
-      <span style="font-size:0.78rem;color:#aaa">Stock: <strong style="color:${stock>0?'var(--green)':'var(--red)'}">${stock}</strong></span>
-      <input class="inp inp-sm" type="number" min="0" max="${stock}" value="${initVal}" id="sq_${p.id}" ${stock===0&&!initVal?'disabled':''}>`;
+      <span style="flex:1;font-size:0.85rem;font-weight:500">${p.name}</span>
+      <span style="font-size:0.75rem;color:#bbb">Stock:<strong style="color:${stock>0?'var(--green)':'var(--red)'};margin-left:3px">${stock}</strong></span>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
+        <span style="font-size:0.65rem;color:var(--chocolate);font-weight:600">Normal</span>
+        <input class="inp inp-sm" type="number" min="0" value="${initNormal}" id="sq_${p.id}" style="width:58px" ${stock===0&&!initNormal?'disabled':''}>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
+        <span style="font-size:0.65rem;color:var(--blue);font-weight:600">Al costo</span>
+        <input class="inp inp-sm" type="number" min="0" value="${initCost}" id="sc_${p.id}" style="width:58px;border-color:#a0b4d6" ${stock===0&&!initCost?'disabled':''}>
+      </div>`;
     el.appendChild(row);
   });
 }
 function cancelEditSale(){
   editingSaleId=null;
   document.getElementById('sale_save_btn').textContent='💾 Guardar Venta';
-  products.forEach(p=>{ const e=document.getElementById('sq_'+p.id); if(e) e.value=0; });
+  products.forEach(p=>{
+    const n=document.getElementById('sq_'+p.id); if(n) n.value=0;
+    const c=document.getElementById('sc_'+p.id); if(c) c.value=0;
+  });
   document.getElementById('sale_tip').value=0;
   document.getElementById('sale_change').value=0;
-  document.getElementById('sale_owner').checked=false;
 }
 function editSale(id){
   const sale=sales.find(s=>s.id==id); if(!sale) return;
   editingSaleId=id;
   document.getElementById('sale_date').value=sale.date;
   document.getElementById('sale_purchase_ref').value=sale.purchaseRef||'';
-  document.getElementById('sale_owner').checked=!!sale.isOwner;
   document.getElementById('sale_tip').value=sale.tip||0;
   document.getElementById('sale_change').value=sale.change||0;
   renderSaleFormQty(id);
@@ -646,40 +698,36 @@ function editSale(id){
 async function saveSale(){
   const date=document.getElementById('sale_date').value;
   const purRef=document.getElementById('sale_purchase_ref').value||null;
-  const isOwner=document.getElementById('sale_owner').checked;
   const tip=parseFloat(document.getElementById('sale_tip').value)||0;
   const change=parseFloat(document.getElementById('sale_change').value)||0;
   if(!date){ alert('Selecciona una fecha'); return; }
-  const items={};
+  const items={}, costItems={};
   let total=0, errors='';
   products.forEach(p=>{
-    const q=parseInt(document.getElementById('sq_'+p.id)?.value)||0;
+    const qn=parseInt(document.getElementById('sq_'+p.id)?.value)||0;
+    const qc=parseInt(document.getElementById('sc_'+p.id)?.value)||0;
+    const q=qn+qc;
     if(q>0){
       let stock=purRef?getStock(p.id,purRef):getStock(p.id);
-      if(editingSaleId){ const old=sales.find(s=>s.id==editingSaleId); if(old) stock+=old.items[p.id]||0; }
-      if(q>stock){ errors+=`Sin stock suficiente de "${p.name}" (disponible: ${stock})\n`; }
-      else { items[p.id]=q; total+=q; }
+      if(editingSaleId){ const old=sales.find(s=>s.id==editingSaleId); if(old) stock+=(old.items[p.id]||0)+(old.costItems[p.id]||0); }
+      if(q>stock){ errors+=`Sin stock de "${p.name}" (disponible: ${stock})\n`; }
+      else { if(qn>0) items[p.id]=qn; if(qc>0) costItems[p.id]=qc; total+=q; }
     }
   });
   if(errors){ alert(errors); return; }
   if(total===0){ alert('Agrega al menos una pieza'); return; }
-
   showLoading();
   if(editingSaleId){
-    const {error}=await db.from('sales').delete().eq('id',editingSaleId);
-    if(error){ hideLoading(); toast('Error al editar',true); return; }
+    await db.from('sales').delete().eq('id',editingSaleId);
     sales=sales.filter(s=>s.id!==editingSaleId);
     editingSaleId=null;
   }
-  const row={date, purchase_ref:purRef, is_owner:isOwner, tip, change, items};
-  const {data,error}=await db.from('sales').insert(row).select().single();
+  const {data,error}=await db.from('sales').insert({date,purchase_ref:purRef,tip,change,items,cost_items:costItems}).select().single();
   hideLoading();
   if(error){ toast('Error al guardar venta',true); return; }
   sales.unshift(mapSale(data));
   cancelEditSale();
-  populateSaleRef();
-  renderSaleFormQty();
-  renderSaleHistory();
+  populateSaleRef(); renderSaleFormQty(); renderSaleHistory();
   toast('Venta guardada ✓');
 }
 
@@ -694,27 +742,33 @@ async function deleteSale(id){
   toast('Venta eliminada');
 }
 
+function saleRevenue(sale){
+  let r=sale.tip||0;
+  Object.entries(sale.items).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) r+=p.price*qty; });
+  Object.entries(sale.costItems).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) r+=p.cost*qty; });
+  return r;
+}
 function renderSaleHistory(){
   const el=document.getElementById('saleHistory');
   if(!sales.length){ el.innerHTML='<div class="empty"><div class="empty-icon">💰</div>Aún no hay ventas registradas</div>'; return; }
   el.innerHTML='';
   sales.forEach(sale=>{
-    let subtotalItems=0, rows='';
-    const usePrice=!sale.isOwner;
+    let rows='', subtotal=0;
+    // Normal price items
     Object.entries(sale.items).forEach(([pid,qty])=>{
-      const p=getProd(pid); if(!p) return;
-      const unitPrice=usePrice?p.price:p.cost;
-      const subtotal=unitPrice*qty; subtotalItems+=subtotal;
-      rows+=`<tr>
-        <td style="color:var(--chocolate);font-weight:500">${p.name}</td>
-        <td style="text-align:center">${qty}</td>
-        <td>${fmt(unitPrice)}${sale.isOwner?' <span style="font-size:0.7rem;color:var(--blue)">(costo)</span>':''}</td>
-        <td style="font-weight:600">${fmt(subtotal)}</td>
-      </tr>`;
+      const p=getProd(pid); if(!p||!qty) return;
+      const s=p.price*qty; subtotal+=s;
+      rows+=`<tr><td style="color:var(--chocolate);font-weight:500">${p.name}</td><td style="text-align:center">${qty}</td><td>${fmt(p.price)}</td><td style="font-weight:600">${fmt(s)}</td></tr>`;
+    });
+    // At-cost items
+    Object.entries(sale.costItems).forEach(([pid,qty])=>{
+      const p=getProd(pid); if(!p||!qty) return;
+      const s=p.cost*qty; subtotal+=s;
+      rows+=`<tr><td style="color:var(--blue);font-weight:500">${p.name} <span style="font-size:0.7rem">(costo)</span></td><td style="text-align:center">${qty}</td><td style="color:var(--blue)">${fmt(p.cost)}</td><td style="font-weight:600;color:var(--blue)">${fmt(s)}</td></tr>`;
     });
     const tip=sale.tip||0;
-    const revenue=subtotalItems+tip;
-    const purLabel=sale.purchaseRef?(()=>{ const pur=purchases.find(p=>p.id==sale.purchaseRef); return pur?fmtDate(pur.date):'?'; })():null;
+    const revenue=subtotal+tip;
+    const purLabel=sale.purchaseRef?(()=>{ const pur=purchases.find(p=>p.id==sale.purchaseRef); return pur?fmtDate(pur.delivery_date||pur.date):'?'; })():null;
     const div=document.createElement('div');
     div.className='hist-entry';
     div.innerHTML=`
@@ -722,7 +776,6 @@ function renderSaleHistory(){
         <div>
           <span>📅 ${fmtDate(sale.date)}</span>
           ${purLabel?`<span class="fifo-tag">📦 ${purLabel}</span>`:''}
-          ${sale.isOwner?`<span class="badge badge-blue" style="margin-left:4px">👤 Dueño</span>`:''}
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <span class="badge badge-green">${fmt(revenue)}</span>
@@ -732,10 +785,10 @@ function renderSaleHistory(){
       </div>
       <div class="hist-body">
         <table>
-          <thead><tr><th>Descripción</th><th style="text-align:center">Cantidad</th><th>Precio</th><th>Total</th></tr></thead>
+          <thead><tr><th>Descripción</th><th style="text-align:center">Cant.</th><th>Precio</th><th>Total</th></tr></thead>
           <tbody>${rows}</tbody>
           <tfoot>
-            ${tip>0?`<tr class="tfoot" style="background:#fff8e6!important"><td colspan="3" style="color:#b87a00">Propina</td><td style="color:#b87a00">${fmt(tip)}</td></tr>`:''}
+            ${tip>0?`<tr class="tfoot" style="background:#fff8e6!important"><td colspan="3" style="color:#b87a00">🎁 Propina</td><td style="color:#b87a00">${fmt(tip)}</td></tr>`:''}
             <tr class="tfoot"><td colspan="2">Total venta</td><td></td><td>${fmt(revenue)}</td></tr>
             ${sale.change?`<tr><td colspan="3" style="font-size:0.78rem;color:#888;padding:5px 10px">💵 Saldo/Cambio del día</td><td style="font-size:0.78rem;color:#888;padding:5px 10px">${fmt(sale.change)}</td></tr>`:''}
           </tfoot>
@@ -825,49 +878,60 @@ function renderResumen(){
   if(purId){
     const pur=purchases.find(p=>p.id==purId);
     if(!pur){ el.innerHTML=''; return; }
+    const delivDate=pur.delivery_date||pur.date;
+    const todayMs=new Date(today()).getTime();
+    const delivMs=new Date(delivDate).getTime();
     let invRows='', stockPrice=0;
     products.forEach(p=>{
       const bought=pur.items[p.id]||0; if(!bought) return;
-      const sold=sales.filter(s=>s.purchaseRef==purId&&inMonth(s.date)).reduce((a,s)=>a+(s.items[p.id]||0),0);
+      const sold=sales.filter(s=>s.purchaseRef==purId&&inMonth(s.date)).reduce((a,s)=>a+(s.items[p.id]||0)+(s.costItems[p.id]||0),0);
       const remaining=bought-sold;
       stockPrice+=remaining*p.price;
       const pct=bought>0?Math.round((sold/bought)*100):0;
       const cls=remaining>3?'stock-ok':remaining>0?'stock-low':'stock-out';
+      // días para vender: 4 días desde entrega
+      const deadlineMs=delivMs+(4*86400000);
+      const daysLeft=Math.ceil((deadlineMs-todayMs)/86400000);
+      const dayCls=daysLeft>2?'stock-ok':daysLeft>0?'stock-low':'stock-out';
+      const dayLabel=remaining===0?'<span style="color:#ccc">—</span>':`<span class="${dayCls}">${daysLeft>0?daysLeft+'d':'Vencido'}</span>`;
       invRows+=`<tr>
         <td style="font-weight:500;color:var(--chocolate)">${p.name}</td>
         <td style="text-align:center">${bought}</td><td style="text-align:center;color:var(--green)">${sold}</td>
         <td class="${cls}" style="text-align:center">${remaining}</td>
+        <td style="text-align:center">${dayLabel}</td>
         <td><div style="display:flex;align-items:center;gap:6px;"><div class="prog-wrap"><div class="prog-bar" style="width:${pct}%"></div></div><span style="font-size:0.78rem;color:#aaa">${pct}%</span></div></td>
       </tr>`;
     });
     let revenue=0;
-    sales.filter(s=>s.purchaseRef==purId&&inMonth(s.date)).forEach(s=>{
-      Object.entries(s.items).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) revenue+=(s.isOwner?p.cost:p.price)*qty; });
-      revenue+=s.tip||0;
-    });
+    const purSales=sales.filter(s=>s.purchaseRef==purId&&inMonth(s.date));
+    purSales.forEach(s=>{ revenue+=saleRevenue(s); });
     let purchaseCost=0;
     Object.entries(pur.items).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) purchaseCost+=p.cost*qty; });
-    const dayChanges=sales.filter(s=>s.purchaseRef==purId&&inMonth(s.date)&&s.change);
+    // Propinas por día
+    const tipsMap={};
+    purSales.filter(s=>s.tip>0).forEach(s=>{ tipsMap[s.date]=(tipsMap[s.date]||0)+s.tip; });
+    const tipRows=Object.entries(tipsMap).sort().map(([d,t])=>`<tr><td>${fmtDate(d)}</td><td style="color:#b87a00;font-weight:600">${fmt(t)}</td></tr>`).join('');
+    const totalTips=Object.values(tipsMap).reduce((a,b)=>a+b,0);
+    // Saldo/cambio por día
+    const dayChanges=purSales.filter(s=>s.change);
     const changeRows=dayChanges.map(s=>`<tr><td>${fmtDate(s.date)}</td><td style="color:var(--blue);font-weight:600">${fmt(s.change)}</td></tr>`).join('');
     el.innerHTML=`<div class="card">
-      <div class="card-head"><span class="icon">📦</span>Compra del ${fmtDate(pur.date)}</div>
+      <div class="card-head"><span class="icon">📦</span>Pedido ${fmtDate(pur.date)} · Entrega ${fmtDate(delivDate)}</div>
       <div class="card-body">
         <div class="stat-row">
           <div class="chip"><div class="chip-label">Invertido</div><div class="chip-val">${fmt(purchaseCost)}</div></div>
           <div class="chip"><div class="chip-label">Recaudado</div><div class="chip-val green">${fmt(revenue)}</div></div>
           <div class="chip"><div class="chip-label">En inventario</div><div class="chip-val blue">${fmt(stockPrice)}</div></div>
         </div>
-        <table><thead><tr><th>Producto</th><th style="text-align:center">Comprado</th><th style="text-align:center">Vendido</th><th style="text-align:center">Restante</th><th>Avance</th></tr></thead>
-        <tbody>${invRows||'<tr><td colspan="5" style="text-align:center;color:#aaa">Sin productos</td></tr>'}</tbody></table>
+        <table><thead><tr><th>Producto</th><th style="text-align:center">Comprado</th><th style="text-align:center">Vendido</th><th style="text-align:center">Restante</th><th style="text-align:center">Días p/vender</th><th>Avance</th></tr></thead>
+        <tbody>${invRows||'<tr><td colspan="6" style="text-align:center;color:#aaa">Sin productos</td></tr>'}</tbody></table>
+        ${tipRows?`<hr class="divider"><p class="section-label">🎁 Propinas por día</p><table><thead><tr><th>Fecha</th><th>Propina</th></tr></thead><tbody>${tipRows}</tbody><tfoot><tr class="tfoot"><td>Total propinas</td><td>${fmt(totalTips)}</td></tr></tfoot></table>`:''}
         ${changeRows?`<hr class="divider"><p class="section-label">💵 Saldo / Cambio por día</p><table><thead><tr><th>Fecha</th><th>Saldo</th></tr></thead><tbody>${changeRows}</tbody></table>`:''}
       </div></div>`;
   } else {
     let totalInvested=0, totalRevenue=0, totalExpenses=0;
     purchases.filter(p=>inMonth(p.date)).forEach(pur=>{ Object.entries(pur.items).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) totalInvested+=p.cost*qty; }); });
-    sales.filter(s=>inMonth(s.date)).forEach(s=>{
-      Object.entries(s.items).forEach(([pid,qty])=>{ const p=getProd(pid); if(p) totalRevenue+=(s.isOwner?p.cost:p.price)*qty; });
-      totalRevenue+=s.tip||0;
-    });
+    sales.filter(s=>inMonth(s.date)).forEach(s=>{ totalRevenue+=saleRevenue(s); });
     expenses.filter(e=>inMonth(e.date)).forEach(e=>{ totalExpenses+=e.amount; });
     const netProfit=totalRevenue-totalInvested-totalExpenses;
     const pct=totalInvested>0?Math.round((netProfit/totalInvested)*100):0;
@@ -878,7 +942,10 @@ function renderResumen(){
       invRows+=`<tr><td style="font-weight:500;color:var(--chocolate)">${p.name}</td><td class="${cls}">${stock>5?'✅':stock>0?'⚠️':'❌'} ${stock}</td><td>${fmt(stock*p.cost)}</td><td>${fmt(stock*p.price)}</td></tr>`;
     });
     const soldMap={};
-    sales.filter(s=>inMonth(s.date)).forEach(s=>{ Object.entries(s.items).forEach(([pid,qty])=>{ soldMap[pid]=(soldMap[pid]||0)+qty; }); });
+    sales.filter(s=>inMonth(s.date)).forEach(s=>{
+      Object.entries(s.items).forEach(([pid,qty])=>{ soldMap[pid]=(soldMap[pid]||0)+qty; });
+      Object.entries(s.costItems).forEach(([pid,qty])=>{ soldMap[pid]=(soldMap[pid]||0)+qty; });
+    });
     const ranked=products.map(p=>({p,sold:soldMap[p.id]||0,gain:(p.price-p.cost)*(soldMap[p.id]||0)})).sort((a,b)=>b.sold-a.sold);
     const maxSold=ranked[0]?.sold||1;
     const medals=['🥇','🥈','🥉'];
@@ -962,15 +1029,117 @@ async function logout(){
   document.getElementById('auth-password').value='';
 }
 
+// ─── CORTE DE CAJA ────────────────────────────────────────────
+function getDaySales(date){ return sales.filter(s=>s.date===date); }
+function getDayRevenue(date){ return getDaySales(date).reduce((a,s)=>a+saleRevenue(s),0); }
+function getDayExpenses(date){ return expenses.filter(e=>e.date===date).reduce((a,e)=>a+e.amount,0); }
+function getDayTips(date){ return getDaySales(date).reduce((a,s)=>a+(s.tip||0),0); }
+
+function renderCajaPreview(){
+  const date=document.getElementById('caja_date').value;
+  const opening=parseFloat(document.getElementById('caja_opening').value)||0;
+  const el=document.getElementById('caja_preview');
+  if(!date){ el.innerHTML=''; return; }
+  const ventas=getDayRevenue(date);
+  const gastos=getDayExpenses(date);
+  const tips=getDayTips(date);
+  const expected=opening+ventas-gastos;
+  el.innerHTML=`
+    <div style="background:var(--warm);border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+      <table style="width:100%">
+        <tbody>
+          <tr><td style="padding:4px 0;color:#888">Saldo inicial</td><td style="text-align:right;font-weight:600">${fmt(opening)}</td></tr>
+          <tr><td style="padding:4px 0;color:var(--green)">+ Ventas del día</td><td style="text-align:right;font-weight:600;color:var(--green)">${fmt(ventas)}</td></tr>
+          ${tips>0?`<tr><td style="padding:4px 0;color:#b87a00">+ Propinas</td><td style="text-align:right;font-weight:600;color:#b87a00">${fmt(tips)}</td></tr>`:''}
+          <tr><td style="padding:4px 0;color:var(--red)">− Gastos del día</td><td style="text-align:right;font-weight:600;color:var(--red)">${fmt(gastos)}</td></tr>
+          <tr style="border-top:1px solid var(--blush)"><td style="padding:8px 0 4px;font-weight:700;color:var(--chocolate)">Saldo esperado en caja</td><td style="text-align:right;font-family:'Playfair Display',serif;font-size:1.2rem;color:var(--chocolate);padding-top:8px">${fmt(expected)}</td></tr>
+        </tbody>
+      </table>
+    </div>`;
+  renderCajaDiff();
+}
+function renderCajaDiff(){
+  const date=document.getElementById('caja_date').value;
+  const opening=parseFloat(document.getElementById('caja_opening').value)||0;
+  const closing=parseFloat(document.getElementById('caja_closing').value)||0;
+  const el=document.getElementById('caja_diff');
+  if(!date||!closing){ el.innerHTML=''; return; }
+  const ventas=getDayRevenue(date);
+  const gastos=getDayExpenses(date);
+  const expected=opening+ventas-gastos;
+  const diff=closing-expected;
+  el.innerHTML=`<div style="margin-top:8px;padding:10px 14px;border-radius:10px;background:${diff===0?'var(--green-light)':diff>0?'#fff8e6':'var(--red-light)'};display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-weight:600;font-size:0.88rem;color:${diff===0?'var(--green)':diff>0?'#b87a00':'var(--red)'}">
+      ${diff===0?'✅ Cuadra perfecto':diff>0?`📈 Sobrante: ${fmt(diff)}`:`📉 Faltante: ${fmt(Math.abs(diff))}`}
+    </span>
+    <span style="font-size:0.78rem;color:#aaa">Esperado: ${fmt(expected)} · Real: ${fmt(closing)}</span>
+  </div>`;
+}
+async function saveCashCut(){
+  const date=document.getElementById('caja_date').value;
+  const opening=parseFloat(document.getElementById('caja_opening').value)||0;
+  const closing=parseFloat(document.getElementById('caja_closing').value)||0;
+  const notes=document.getElementById('caja_notes').value.trim();
+  if(!date){ alert('Selecciona una fecha'); return; }
+  showLoading();
+  const {data,error}=await db.from('cash_cuts').insert({date,opening_balance:opening,closing_balance:closing,notes}).select().single();
+  hideLoading();
+  if(error){ toast('Error al guardar corte',true); return; }
+  cashCuts.unshift(mapCut(data));
+  document.getElementById('caja_opening').value=closing; // siguiente turno inicia con este saldo
+  document.getElementById('caja_closing').value=0;
+  document.getElementById('caja_notes').value='';
+  renderCajaPreview(); renderCutHistory();
+  toast('Corte guardado ✓');
+}
+async function deleteCut(id){
+  if(!confirm('¿Eliminar este corte?')) return;
+  showLoading();
+  await db.from('cash_cuts').delete().eq('id',id);
+  hideLoading();
+  cashCuts=cashCuts.filter(c=>c.id!==id);
+  renderCutHistory(); toast('Corte eliminado');
+}
+function renderCutHistory(){
+  const el=document.getElementById('cajaCuts');
+  if(!cashCuts.length){ el.innerHTML='<div class="empty"><div class="empty-icon">🏧</div>Aún no hay cortes registrados</div>'; return; }
+  el.innerHTML='';
+  cashCuts.forEach(c=>{
+    const ventas=getDayRevenue(c.date);
+    const gastos=getDayExpenses(c.date);
+    const expected=c.opening+ventas-gastos;
+    const diff=c.closing-expected;
+    const div=document.createElement('div');
+    div.className='hist-entry';
+    div.innerHTML=`
+      <div class="hist-head">
+        <span>📅 ${fmtDate(c.date)}</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="badge ${diff===0?'badge-green':diff>0?'badge-warn':'badge-red'}">${diff===0?'✅ Cuadra':diff>0?`+${fmt(diff)}`:fmt(diff)}</span>
+          <button class="btn btn-danger" onclick="deleteCut(${c.id})">✕</button>
+        </div>
+      </div>
+      <div class="hist-body" style="padding:10px 14px;">
+        <table><tbody>
+          <tr><td style="color:#888;padding:3px 0">Saldo inicial</td><td style="text-align:right">${fmt(c.opening)}</td></tr>
+          <tr><td style="color:var(--green);padding:3px 0">Ventas</td><td style="text-align:right;color:var(--green)">${fmt(ventas)}</td></tr>
+          <tr><td style="color:var(--red);padding:3px 0">Gastos</td><td style="text-align:right;color:var(--red)">${fmt(gastos)}</td></tr>
+          <tr><td style="color:#888;padding:3px 0">Esperado</td><td style="text-align:right;font-weight:600">${fmt(expected)}</td></tr>
+          <tr><td style="color:var(--chocolate);font-weight:700;padding:3px 0">Real contado</td><td style="text-align:right;font-weight:700;color:var(--chocolate)">${fmt(c.closing)}</td></tr>
+          ${c.notes?`<tr><td colspan="2" style="font-size:0.78rem;color:#aaa;padding-top:4px">📝 ${c.notes}</td></tr>`:''}
+        </tbody></table>
+      </div>`;
+    el.appendChild(div);
+  });
+}
+
 // ─── INIT ─────────────────────────────────────────────────────
 async function initApp(){
   await fetchAll();
-  renderProducts();
-  renderBuyForm();
-  renderPurchaseHistory();
-  renderSaleHistory();
-  renderExpenseHistory();
+  renderProducts(); renderBuyForm(); renderPurchaseHistory();
+  renderSaleHistory(); renderExpenseHistory(); renderCutHistory();
   document.getElementById('exp_date').value=today();
+  document.getElementById('caja_date').value=today();
 }
 
 (async ()=>{
